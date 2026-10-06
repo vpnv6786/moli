@@ -132,6 +132,7 @@ impl ScriptVm {
         let (document, result) = {
             let context_host = self._context_host.borrow();
             let document = context_host.document_handle();
+            let freshness = context_host.layout_freshness_key(document, request.viewport);
             let result = context_host
                 .build_layout_pass_for_document(document, request)
                 .and_then(|pass| {
@@ -145,7 +146,7 @@ impl ScriptVm {
                     };
                     let value = consume(&mut pass)?;
                     if publishes_layout {
-                        context_host.publish_layout_pass_for_document(document, pass);
+                        context_host.publish_layout_pass_for_document(document, pass, freshness);
                     }
                     Ok(Some((value, css_images)))
                 });

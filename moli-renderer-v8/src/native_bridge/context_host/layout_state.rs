@@ -24,6 +24,18 @@ struct CachedInferredFrameStyleViewport {
     viewport: StyleViewport,
 }
 
+/// Generation metadata for the single retained tree. It owns no live DOM,
+/// style borrow, working tree, or paint output.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LayoutFreshnessKey {
+    pub(super) document: DomHandle,
+    pub(super) dom_generation: u64,
+    pub(super) style_generations: Vec<(DomHandle, u64, u64, u64)>,
+    pub(super) interaction_generation: u64,
+    pub(super) resource_generation: u64,
+    pub(super) viewport: LayoutViewport,
+}
+
 /// Layout-facing state whose lifetime is bounded by exactly one main Document.
 ///
 /// `ScriptVm` outlives `document.open()`, so the main-document owner
@@ -43,6 +55,7 @@ pub(super) struct DocumentLayoutState {
     web_font_resource_generation: Option<StylesheetResourceGeneration>,
     visual_state_generation: u64,
     latest_layout: LatestLayoutTreeCache,
+    latest_layout_freshness: Option<LayoutFreshnessKey>,
     /// Last used content viewport published by each live iframe owner's
     /// parent layout. Blink keeps the equivalent size on LocalFrameView; it is
     /// separate from the single latest-tree slot because a later fresh layout
@@ -141,10 +154,20 @@ impl DocumentLayoutState {
         tree: FrozenLayoutTree<DomHandle>,
     ) {
         self.latest_layout.publish(document, tree);
+        self.latest_layout_freshness = None;
+    }
+
+    pub(super) fn latest_layout_is_fresh(&self, key: &LayoutFreshnessKey) -> bool {
+        self.latest_layout_freshness.as_ref() == Some(key)
+    }
+
+    pub(super) fn publish_layout_freshness(&mut self, key: Option<LayoutFreshnessKey>) {
+        self.latest_layout_freshness = key;
     }
 
     pub(super) fn clear_latest_layout(&mut self) {
         self.latest_layout.clear();
+        self.latest_layout_freshness = None;
         self.mark_visual_state_dirty();
     }
 

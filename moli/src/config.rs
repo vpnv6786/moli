@@ -90,6 +90,9 @@ impl AppConfig {
 }
 
 fn apply_common_args(config: &mut AppConfig, common: &CommonArgs) -> Result<()> {
+    if common.fresh_geometry && !common.layout {
+        bail!("--fresh-geometry requires --layout or MOLI_LAYOUT=true");
+    }
     if common.scrollbars && !common.layout {
         bail!("--scrollbars requires --layout or MOLI_LAYOUT=true");
     }
@@ -187,7 +190,9 @@ fn apply_common_args(config: &mut AppConfig, common: &CommonArgs) -> Result<()> 
     config
         .browser
         .set_subframe_loading_enabled(!common.disable_subframes);
-    config.browser.set_layout_policy(if common.layout {
+    config.browser.set_layout_policy(if common.fresh_geometry {
+        LayoutPolicy::FreshGeometry
+    } else if common.layout {
         LayoutPolicy::OnDemand
     } else {
         LayoutPolicy::Mock
@@ -343,6 +348,39 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use clap::Parser;
     use std::path::Path;
+
+    #[test]
+    fn fresh_geometry_is_opt_in_for_fetch_and_serve() {
+        for command in ["fetch", "serve"] {
+            for (flags, expected) in [
+                (Vec::<&str>::new(), moli_core::LayoutPolicy::Mock),
+                (vec!["--layout"], moli_core::LayoutPolicy::OnDemand),
+                (
+                    vec!["--layout", "--fresh-geometry"],
+                    moli_core::LayoutPolicy::FreshGeometry,
+                ),
+            ] {
+                let mut args = vec!["moli", command];
+                args.extend(flags);
+                if command == "fetch" {
+                    args.push("https://example.test/");
+                }
+                let cli = Cli::parse_from(args);
+                assert_eq!(
+                    AppConfig::from_cli(&cli).unwrap().browser.layout_policy(),
+                    expected
+                );
+            }
+            let mut args = vec!["moli", command, "--fresh-geometry"];
+            if command == "fetch" {
+                args.push("https://example.test/");
+            }
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "fresh geometry requires real layout"
+            );
+        }
+    }
 
     #[test]
     fn tls_credentials_reach_fetch_config_for_fetch_and_serve() {

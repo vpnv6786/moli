@@ -253,6 +253,7 @@ enabled by default:
 | --- | --- |
 | Default | `LayoutPolicy::Mock` — deterministic geometry in a compatible format, with no real layout or paint |
 | `--layout` | `LayoutPolicy::OnDemand` — real layout, geometry, hit-testing, coordinate input, screenshots, screencast |
+| `--layout --fresh-geometry` (fork opt-in) | `LayoutPolicy::FreshGeometry` — refresh geometry/hit-testing after DOM, CSS, viewport, interaction or resource changes; reuse the last tree for clean reads |
 | `--resource` | Fetch all optional visual/media resource families |
 | `--image`, `--font`, `--audio`, `--video`, `--media`, `--text-track` | Enable one specific optional resource family |
 | `--profile-dir`, `--http-cache-dir`, `--cookie-file` | Selectively enable the persistence required by the workload |
@@ -265,6 +266,12 @@ geometry reads may reuse it even if the page has changed. Screenshots always
 rebuild and replace the frozen tree. Each screencast subscription remembers
 only an opaque visual-state token: an unchanged token suppresses the poll,
 while a changed token triggers one fresh frame. Paint results are never reused.
+
+The fork's `--fresh-geometry` option (or `MOLI_FRESH_GEOMETRY=true` with
+`MOLI_LAYOUT=true`) refreshes a stale tree before geometry queries and input.
+For example, `moli serve --layout --fresh-geometry` makes a newly inserted
+overlay visible to the next bounding-box or hit-test query. It retains one
+frozen tree and generation metadata; it does not continuously render or paint.
 
 ## Architecture
 
