@@ -134,6 +134,10 @@ fn wpt_fixture_host_resolve_entries(url: &str) -> Result<Vec<String>> {
     };
     Ok(vec![
         format!("localhost:{port}:127.0.0.1"),
+        // get-host-info.sub.js uses the trailing-dot localhost spelling to
+        // create a cross-site origin. It still targets the fixture listener,
+        // so admit it through the same explicit loopback override.
+        format!("localhost.:{port}:127.0.0.1"),
         format!("127.0.0.1:{port}:127.0.0.1"),
     ])
 }
@@ -362,6 +366,19 @@ fn rendered_wait_until(wait_until: WptWaitUntil) -> RenderedDomWaitUntil {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixture_host_resolution_covers_wpt_localhost_aliases() {
+        assert_eq!(
+            wpt_fixture_host_resolve_entries("https://localhost:45678/wpt/test.html")
+                .expect("fixture URL should parse"),
+            [
+                "localhost:45678:127.0.0.1",
+                "localhost.:45678:127.0.0.1",
+                "127.0.0.1:45678:127.0.0.1",
+            ]
+        );
+    }
 
     fn report(complete: bool, status: &str, tests: Vec<WptSubtest>) -> WptPageReport {
         WptPageReport {

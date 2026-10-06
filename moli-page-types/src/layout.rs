@@ -10,11 +10,14 @@ pub enum LayoutPolicy {
     /// Screenshots and screencasts publish layout; print projections are temporary.
     /// Geometry queries and input read the last published layout, if any.
     OnDemand,
+    /// Refresh stale geometry and hit testing after DOM/style/viewport changes.
+    /// Clean reads reuse the latest frozen tree; no continuous rendering runs.
+    FreshGeometry,
 }
 
 impl LayoutPolicy {
     pub const fn uses_real_layout(self) -> bool {
-        matches!(self, Self::OnDemand)
+        matches!(self, Self::OnDemand | Self::FreshGeometry)
     }
 }
 
@@ -40,6 +43,7 @@ mod tests {
         assert_eq!(LayoutPolicy::default(), LayoutPolicy::Mock);
         assert!(!LayoutPolicy::default().uses_real_layout());
         assert!(LayoutPolicy::OnDemand.uses_real_layout());
+        assert!(LayoutPolicy::FreshGeometry.uses_real_layout());
         assert!(!LayoutPolicy::Mock.uses_real_layout());
     }
 }

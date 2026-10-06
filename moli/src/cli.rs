@@ -595,6 +595,16 @@ pub struct CommonArgs {
     )]
     pub layout: bool,
 
+    /// Refresh geometry after DOM/CSS changes instead of retaining stale boxes.
+    /// Requires --layout; clean reads reuse the latest tree without painting.
+    #[arg(
+        long,
+        env = "MOLI_FRESH_GEOMETRY",
+        value_parser = clap::builder::BoolishValueParser::new(),
+        requires_if("true", "layout")
+    )]
+    pub fresh_geometry: bool,
+
     /// Show native scrollbars. Requires --layout.
     #[arg(
         long,

@@ -1,6 +1,157 @@
 use super::*;
 
 #[test]
+fn fresh_geometry_refreshes_dynamic_overlay() {
+    let mut vm = new_parsed_test_vm(
+        "https://miteclaw-overlay.test/",
+        r#"<html><head><style>body{margin:40px}button,input{display:block;width:180px;height:40px;margin:12px}</style></head><body><button id="probe-target">Save</button><input value="old"></body></html>"#,
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::FreshGeometry);
+    let before = vm.layout_pass_observability_for_test().1;
+    let result = vm
+        .eval(
+            r#"(() => {
+        const target=document.getElementById('probe-target');
+        target.getBoundingClientRect();
+        const cover=document.createElement('div');
+        cover.id='probe-cover';
+        cover.style='position:fixed;inset:0;z-index:9999';
+        document.body.append(cover);
+        const rect=target.getBoundingClientRect(), overlay=cover.getBoundingClientRect();
+        const x=rect.left+rect.width/2, y=rect.top+rect.height/2;
+        return JSON.stringify([
+            overlay.width>0 && overlay.height>0,
+            overlay.left<=x && overlay.right>x && overlay.top<=y && overlay.bottom>y,
+            document.elementFromPoint(x,y)===cover
+        ]);
+    })()"#,
+        )
+        .expect("MiteClaw styled overlay capability fixture must evaluate");
+    assert_eq!(
+        result, "[true,true,true]",
+        "new overlay must participate in geometry and hit testing"
+    );
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 2);
+    vm.eval("document.getElementById('probe-cover').getBoundingClientRect(); document.elementFromPoint(60,60)").unwrap();
+    assert_eq!(
+        vm.layout_pass_observability_for_test().1,
+        before + 2,
+        "clean reads reuse the tree"
+    );
+    assert_eq!(vm.eval(r#"(() => {
+        document.getElementById('probe-cover').remove();
+        const target=document.getElementById('probe-target'), rect=target.getBoundingClientRect();
+        return String(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)===target);
+    })()"#).unwrap(), "true");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 3);
+}
+
+#[test]
+fn fresh_geometry_refreshes_cssom_and_resource_changes() {
+    let mut vm = new_parsed_test_vm(
+        "https://fresh-cssom.test/",
+        "<html><head><style>#target{width:100px;height:50px}</style></head><body><div id=target></div></body></html>",
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::FreshGeometry);
+    let query = "String(document.getElementById('target').getBoundingClientRect().width)";
+    let before = vm.layout_pass_observability_for_test().1;
+    assert_eq!(vm.eval(query).unwrap(), "100");
+    vm.eval("document.styleSheets[0].cssRules[0].style.width='200px'")
+        .unwrap();
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 2);
+    vm.visual_resource_generation_handle_for_test().bump();
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 3);
+}
+
+#[test]
+fn fresh_geometry_refreshes_viewport_media_and_capture_viewport() {
+    let mut vm = new_parsed_test_vm(
+        "https://fresh-environment.test/",
+        "<html><head><style>#target{width:50vw;height:50px}@media print{#target{width:42px}}</style></head><body><div id=target></div></body></html>",
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::FreshGeometry);
+    let query = "String(document.getElementById('target').getBoundingClientRect().width)";
+    let before = vm.layout_pass_observability_for_test().1;
+    for (width, expected, passes) in [(100, "50", 1), (320, "160", 2), (320, "160", 2)] {
+        vm.set_viewport_surface(Some(crate::protocol_types::ViewportSurface {
+            inner_width: width,
+            inner_height: 200,
+            device_pixel_ratio: 1.0,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(vm.eval(query).unwrap(), expected);
+        assert_eq!(vm.layout_pass_observability_for_test().1, before + passes);
+    }
+    vm.screenshot_layout_snapshot(moli_layout::LayoutViewport::new(640, 200, 1.0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        vm.eval(query).unwrap(),
+        "160",
+        "normal geometry restores the configured viewport"
+    );
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 4);
+    vm.set_emulated_media(&crate::protocol_types::EmulatedMediaOverrides {
+        media: Some("print".to_owned()),
+        ..Default::default()
+    });
+    assert_eq!(vm.eval(query).unwrap(), "42");
+    assert_eq!(vm.eval(query).unwrap(), "42");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 5);
+}
+
+#[test]
+fn fresh_geometry_refreshes_child_documents_and_document_open() {
+    let mut vm = new_parsed_test_vm(
+        "https://fresh-child.test/",
+        "<html><body><iframe id=frame style='width:300px;height:200px;border:0'></iframe></body></html>",
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::FreshGeometry);
+    vm.eval("globalThis.child=frame.contentDocument; child.open(); child.write('<html><body><div id=target style=\"width:100px;height:50px\"></div></body></html>'); child.close()").unwrap();
+    let query = "String(child.getElementById('target').getBoundingClientRect().width)";
+    let before = vm.layout_pass_observability_for_test().1;
+    assert_eq!(vm.eval(query).unwrap(), "100");
+    vm.eval("child.getElementById('target').style.width='200px'")
+        .unwrap();
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.layout_pass_observability_for_test().1, before + 2);
+    vm.eval("document.open();document.write('<html><body><div id=newTarget style=\"width:75px;height:50px\"></div></body></html>');document.close()").unwrap();
+    assert_eq!(
+        vm.eval("String(document.getElementById('newTarget').getBoundingClientRect().width)")
+            .unwrap(),
+        "75"
+    );
+}
+
+#[test]
+fn fresh_geometry_can_refresh_an_existing_on_demand_snapshot() {
+    let mut vm = new_parsed_test_vm(
+        "https://fresh-transition.test/",
+        "<html><body><div id=target style='width:100px;height:50px'></div></body></html>",
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::OnDemand);
+    let query = "String(target.getBoundingClientRect().width)";
+    assert_eq!(vm.eval(query).unwrap(), "100");
+    vm.eval("target.style.width='200px'").unwrap();
+    assert_eq!(
+        vm.eval(query).unwrap(),
+        "100",
+        "OnDemand retains its published snapshot"
+    );
+    vm.set_layout_policy(moli_page_types::LayoutPolicy::FreshGeometry);
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    let passes = vm.layout_pass_observability_for_test().1;
+    assert_eq!(vm.eval(query).unwrap(), "200");
+    assert_eq!(vm.layout_pass_observability_for_test().1, passes);
+}
+
+#[test]
 fn document_point_queries_use_real_paint_order_geometry() {
     let mut vm = new_rendered_test_vm(
         "https://document-point-query.test/path/index.html",

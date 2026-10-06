@@ -170,6 +170,47 @@ jobs:
           -p moli-opfs
           -p moli-storage-service
 
+  windows-moli-cdp-smoke:
+    name: Windows Moli build and MiteClaw CDP smoke
+    runs-on: windows-2025
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $toolchain = (Get-Content rust-toolchain -Raw).Trim()
+          rustup toolchain install $toolchain --profile minimal --no-self-update
+
+      - name: Build the Windows release binary
+        run: cargo build --locked --release -p moli
+
+      - name: Record the Windows binary SHA-256
+        shell: pwsh
+        run: Get-FileHash target/release/moli.exe -Algorithm SHA256 | Format-List Algorithm, Hash, Path
+
+      - name: Run WebMCP cross-origin fixtures
+        run: >-
+          cargo test --locked --release
+          -p moli-core
+          --test wpt_compat
+          wpt_compat_case_chromium_webmcp_imperative_
+          -- --nocapture
+
+      - name: Set up Go for the CDP smoke
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25.0"
+
+      - name: Check overlay geometry and coordinate click over CDP
+        shell: pwsh
+        working-directory: tools/miteclaw-rod-smoke
+        run: go run -mod=readonly . (Join-Path $env:GITHUB_WORKSPACE "target/release/moli.exe")
+
   python-harness-tests:
     name: Python harness tests
     runs-on: ubuntu-latest

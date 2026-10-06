@@ -5,7 +5,7 @@ use moli_layout::{
 };
 
 use super::JsContextHost;
-use super::layout_state::InferredFrameStyleViewportCacheKey;
+use super::layout_state::{InferredFrameStyleViewportCacheKey, LayoutFreshnessKey};
 use crate::{
     css_resource_urls::{CompletedStylesheetWebFont, StylesheetLoadBlockingResource},
     document_runtime::DomHandle,
@@ -131,6 +131,25 @@ impl JsContextHost {
         )
     }
 
+    pub(crate) fn layout_freshness_key(
+        &self,
+        document: DomHandle,
+        viewport: LayoutViewport,
+    ) -> Option<LayoutFreshnessKey> {
+        (self.layout_policy == moli_page_types::LayoutPolicy::FreshGeometry).then(|| {
+            LayoutFreshnessKey {
+                document,
+                dom_generation: self.dom_host().dom_version(),
+                style_generations: self
+                    .style_engine
+                    .computed_style_observation_generations(self.active_layout_document_handles()),
+                interaction_generation: self.visual_state_generation(),
+                resource_generation: self.visual_resource_generation(),
+                viewport,
+            }
+        })
+    }
+
     pub(crate) fn layout_document_for_source(&self, source: DomHandle) -> Option<DomHandle> {
         self.dom_host().owner_document_handle(source)
     }
@@ -243,10 +262,11 @@ impl JsContextHost {
             .inferred_frame_style_viewport_cache_observability()
     }
 
-    /// Lazily publishes the first screen layout for this main Document.
+    /// Lazily publishes screen geometry for this main Document.
     ///
     /// Every consumer shares the same recursive tree. Missing nodes or newly
-    /// navigated frames in an existing tree must not refresh the whole page.
+    /// navigated frames retain the existing tree in OnDemand mode. The fork's
+    /// opt-in FreshGeometry mode refreshes it when the generation key changes.
     pub(crate) fn ensure_initial_layout(&self) -> Result<(), LayoutError> {
         if !self.layout_policy.uses_real_layout() {
             return Ok(());
@@ -255,22 +275,26 @@ impl JsContextHost {
             return Err(LayoutError::ReentrantLayoutPass);
         }
         let document = self.document_handle();
-        if self
-            .document_layout_state
-            .borrow()
-            .latest_layout(document)
-            .is_some()
+        let viewport = self.layout_viewport_for_document(document);
+        let freshness = self.layout_freshness_key(document, viewport);
         {
-            return Ok(());
+            let state = self.document_layout_state.borrow();
+            if state.latest_layout(document).is_some()
+                && freshness
+                    .as_ref()
+                    .is_none_or(|key| state.latest_layout_is_fresh(key))
+            {
+                return Ok(());
+            }
         }
         let request = LayoutPassRequest::new(
-            self.layout_viewport_for_document(document),
+            viewport,
             moli_layout::LayoutFlushReason::SynchronousGeometry,
         );
         let pass = self
             .build_layout_pass_for_document(document, request)?
             .ok_or(LayoutError::NoLayoutRoot)?;
-        self.publish_layout_pass_for_document(document, pass);
+        self.publish_layout_pass_for_document(document, pass, freshness);
         Ok(())
     }
 
@@ -355,6 +379,7 @@ impl JsContextHost {
         &self,
         document: DomHandle,
         pass: LayoutPassResult<DomHandle>,
+        freshness_before: Option<LayoutFreshnessKey>,
     ) {
         let metrics = pass.metrics;
         let pass_viewport = pass.viewport;
@@ -391,6 +416,17 @@ impl JsContextHost {
             self.style_viewport_generation
                 .set(self.style_viewport_generation.get().saturating_add(1));
         }
+        let freshness = freshness_before.and_then(|before| {
+            let mut after = self.layout_freshness_key(document, pass_viewport)?;
+            // Styles and frame viewports settle during the synchronous pass.
+            // An asynchronous resource completion during it must still dirty
+            // the tree: retain the generation sampled before the pass.
+            after.resource_generation = before.resource_generation;
+            Some(after)
+        });
+        self.document_layout_state
+            .borrow_mut()
+            .publish_layout_freshness(freshness);
         self.last_layout_pass_metrics.set(Some(metrics));
         self.layout_snapshot_cache_publishes
             .set(self.layout_snapshot_cache_publishes.get().saturating_add(1));
@@ -637,6 +673,9 @@ impl GeometryProvider for JsContextHost {
         &mut self,
         queries: &LayoutQueryBatch<Self::NodeId>,
     ) -> Result<LayoutAnswers<Self::NodeId>, LayoutError> {
+        if self.layout_policy == moli_page_types::LayoutPolicy::FreshGeometry {
+            self.ensure_initial_layout()?;
+        }
         let document = self.document_handle();
         self.answer_layout_for_document(document, queries)
     }
