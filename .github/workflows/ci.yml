@@ -189,6 +189,10 @@ jobs:
       - name: Build the Windows release binary
         run: cargo build --locked --release -p moli
 
+      - name: Record the Windows binary SHA-256
+        shell: pwsh
+        run: Get-FileHash target/release/moli.exe -Algorithm SHA256 | Format-List Algorithm, Hash, Path
+
       - name: Run WebMCP cross-origin fixtures
         run: >-
           cargo test --locked --release
